@@ -79,18 +79,22 @@ pub enum OperatingMode {
 }
 
 pub fn operating_mode(ctx: &Context) -> OperatingMode {
-    let repo = ctx.git2_repo.get().unwrap();
+    let Ok(repo) = ctx.repo.get() else {
+        return OperatingMode::OutsideWorkspace(outside_workspace_metadata(ctx).unwrap_or_default());
+    };
     let Ok(head_ref) = repo.head() else {
         return OperatingMode::OutsideWorkspace(outside_workspace_metadata(ctx).unwrap_or_default());
     };
-
-    let Some(head_ref_name) = head_ref.name() else {
+    let Some(head_ref_name) = head_ref.referent_name().map(|name| name.as_bstr()) else {
         return OperatingMode::OutsideWorkspace(outside_workspace_metadata(ctx).unwrap_or_default());
     };
 
-    if OPEN_WORKSPACE_REFS.contains(&head_ref_name) {
+    if OPEN_WORKSPACE_REFS
+        .iter()
+        .any(|workspace_ref| workspace_ref.as_bytes() == head_ref_name)
+    {
         OperatingMode::OpenWorkspace
-    } else if head_ref_name == EDIT_BRANCH_REF {
+    } else if EDIT_BRANCH_REF.as_bytes() == head_ref_name {
         let edit_mode_metadata = read_edit_mode_metadata(ctx);
 
         match edit_mode_metadata {
