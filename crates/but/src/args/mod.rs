@@ -1004,12 +1004,14 @@ pub enum Subcommands {
     /// Skills provide enhanced AI capabilities for working with GitButler through
     /// Claude Code and other AI assistants.
     ///
-    /// Use `but skill install` to install the GitButler skill files into your
-    /// repository or globally.
+    /// Use `but skill install` to install the GitButler skill files. By default,
+    /// it prompts for scope (repository or global home directory) and then format.
+    /// When run outside a git repository, local scope is unavailable and install
+    /// is global-only.
     ///
     /// ## Examples
     ///
-    /// Install the skill in the current repository:
+    /// Install interactively (prompts for scope and format):
     ///
     /// ```text
     /// but skill install

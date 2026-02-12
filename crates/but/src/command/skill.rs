@@ -117,6 +117,49 @@ const SKILL_FORMATS: &[SkillFormat] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallScope {
+    Local,
+    Global,
+}
+
+impl InstallScope {
+    fn is_global(self) -> bool {
+        matches!(self, Self::Global)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallScopeResolution {
+    PromptUser,
+    Fixed(InstallScope),
+}
+
+fn determine_install_scope_resolution(global: bool, has_repo_context: bool) -> InstallScopeResolution {
+    if global {
+        InstallScopeResolution::Fixed(InstallScope::Global)
+    } else if has_repo_context {
+        InstallScopeResolution::PromptUser
+    } else {
+        InstallScopeResolution::Fixed(InstallScope::Global)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InstallScopeOption {
+    Local,
+    Global,
+}
+
+impl From<InstallScopeOption> for String {
+    fn from(value: InstallScopeOption) -> Self {
+        match value {
+            InstallScopeOption::Local => "Local (repository)".to_string(),
+            InstallScopeOption::Global => "Global (home directory)".to_string(),
+        }
+    }
+}
+
 /// Status of an installed skill
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillStatus {
@@ -581,7 +624,28 @@ fn detect_install_path(ctx: Option<&mut Context>, global: bool) -> Result<PathBu
     )
 }
 
-/// Prompt user to select installation format
+fn prompt_for_install_scope(progress: &mut impl std::io::Write) -> Result<InstallScope> {
+    writeln!(progress)?;
+    writeln!(progress, "{}", "Select installation scope:".bold())?;
+    writeln!(progress)?;
+
+    let prompt = cli_prompts::prompts::Selection::new(
+        "Where would you like to install the skill?",
+        vec![InstallScopeOption::Local, InstallScopeOption::Global].into_iter(),
+    );
+
+    match prompt.display() {
+        Ok(InstallScopeOption::Local) => Ok(InstallScope::Local),
+        Ok(InstallScopeOption::Global) => Ok(InstallScope::Global),
+        Err(_) => {
+            // User cancelled the prompt (e.g., pressed Escape)
+            writeln!(progress)?;
+            Err(UserCancelled.into())
+        }
+    }
+}
+
+/// Prompt user to select installation scope and format
 fn prompt_for_install_path(
     ctx: Option<&mut Context>,
     global: bool,
@@ -590,11 +654,27 @@ fn prompt_for_install_path(
 ) -> Result<PathBuf> {
     if out.for_human().is_none() {
         anyhow::bail!(
-            "In non-interactive mode, you must specify --path. Use --path <path> to specify where to install the skill."
+            "In non-interactive mode, you must specify --path or --detect. Use --path <path> to specify where to install the skill, or --detect to update an existing installation."
         );
     }
 
-    let base_dir = get_base_dir(ctx, global)?;
+    let has_repo_context = ctx.is_some();
+    let scope = match determine_install_scope_resolution(global, has_repo_context) {
+        InstallScopeResolution::PromptUser => prompt_for_install_scope(progress)?,
+        InstallScopeResolution::Fixed(scope) => scope,
+    };
+
+    if !global && !has_repo_context {
+        writeln!(progress)?;
+        writeln!(
+            progress,
+            "{} Not in a git repository. Installing globally in your home directory.",
+            "ℹ".blue()
+        )?;
+        writeln!(progress)?;
+    }
+
+    let base_dir = get_base_dir(ctx, scope.is_global())?;
 
     writeln!(progress)?;
     writeln!(progress, "{}", "Select a skill folder format:".bold())?;
@@ -689,6 +769,12 @@ fn install_skill(
     // Validate flags
     if detect && custom_path.is_some() {
         anyhow::bail!("Cannot use both --detect and --path options together");
+    }
+    if ctx.is_none() && !global && custom_path.is_some() {
+        anyhow::bail!(
+            "Cannot use --path outside a git repository unless --global is specified.\n\
+             Use --global --path <path> for a global installation, or run from within a repository for local installation."
+        );
     }
 
     // Determine installation path
@@ -901,6 +987,24 @@ mod tests {
         let result = format.get_install_path(&base);
 
         assert_eq!(result, PathBuf::from("/home/user/.test/skills/foo"));
+    }
+
+    #[test]
+    fn determine_install_scope_resolution_explicit_global_is_fixed_global() {
+        let resolution = determine_install_scope_resolution(true, true);
+        assert_eq!(resolution, InstallScopeResolution::Fixed(InstallScope::Global));
+    }
+
+    #[test]
+    fn determine_install_scope_resolution_repo_context_prompts_user() {
+        let resolution = determine_install_scope_resolution(false, true);
+        assert_eq!(resolution, InstallScopeResolution::PromptUser);
+    }
+
+    #[test]
+    fn determine_install_scope_resolution_no_repo_context_is_fixed_global() {
+        let resolution = determine_install_scope_resolution(false, false);
+        assert_eq!(resolution, InstallScopeResolution::Fixed(InstallScope::Global));
     }
 
     #[test]
